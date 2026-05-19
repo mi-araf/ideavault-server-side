@@ -45,6 +45,46 @@ async function run() {
             res.send(result);
         });
 
+        app.post("/ideas", async (req, res) => {
+            try {
+                const idea = req.body;
+
+                const newIdea = {
+                    ideaTitle: idea.ideaTitle,
+                    shortDescription: idea.shortDescription,
+                    detailedDescription: idea.detailedDescription,
+                    category: idea.category,
+                    tags: idea.tags || [],
+                    imageURL: idea.imageURL,
+                    estimatedBudget: idea.estimatedBudget || null,
+                    targetAudience: idea.targetAudience,
+                    problemStatement: idea.problemStatement,
+                    proposedSolution: idea.proposedSolution,
+                    creatorName: idea.creatorName,
+                    creatorEmail: idea.creatorEmail,
+                    creatorImage: idea.creatorImage || "",
+                    likesCount: 0,
+                    commentsCount: 0,
+                    bookmarksCount: 0,
+                    createdAt: new Date().toISOString(),
+                };
+
+                const result = await ideasCollection.insertOne(newIdea);
+
+                res.send({
+                    success: true,
+                    message: "Idea added successfully",
+                    insertedId: result.insertedId,
+                });
+            } catch (error) {
+                res.status(500).send({
+                    success: false,
+                    message: "Failed to add idea",
+                    error: error.message,
+                });
+            }
+        });
+
 
         await client.db("admin").command({ ping: 1 });
         console.log("Pinged your deployment. You successfully connected to MongoDB!");
