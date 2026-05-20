@@ -23,6 +23,7 @@ const client = new MongoClient(uri, {
 
 let ideasCollection;
 let commentsCollection;
+let bookmarksCollection;
 
 /* Root Route */
 app.get("/", (req, res) => {
@@ -72,11 +73,55 @@ app.post("/ideas", async (req, res) => {
     }
 });
 
-/* Get All Ideas */
+/* Get All Ideas + Search + Filter */
 app.get("/ideas", async (req, res) => {
     try {
+        const { search, category, fromDate, toDate } = req.query;
+
+        const query = {};
+
+        /*
+            Search by idea title
+            Case-insensitive using MongoDB $regex + $options: "i"
+            Example: /ideas?search=ai
+        */
+        if (search) {
+            query.ideaTitle = {
+                $regex: search,
+                $options: "i",
+            };
+        }
+
+        /*
+            Filter by category
+            Example: /ideas?category=Tech
+        */
+        if (category && category !== "All") {
+            query.category = category;
+        }
+
+        /*
+            Optional date range filter
+            Your createdAt is saved as ISO string:
+            new Date().toISOString()
+            So string comparison works correctly for ISO date format.
+            Example:
+            /ideas?fromDate=2026-05-01&toDate=2026-05-20
+        */
+        if (fromDate || toDate) {
+            query.createdAt = {};
+
+            if (fromDate) {
+                query.createdAt.$gte = `${fromDate}T00:00:00.000Z`;
+            }
+
+            if (toDate) {
+                query.createdAt.$lte = `${toDate}T23:59:59.999Z`;
+            }
+        }
+
         const result = await ideasCollection
-            .find()
+            .find(query)
             .sort({ createdAt: -1 })
             .toArray();
 
@@ -115,6 +160,13 @@ app.get("/trending-ideas", async (req, res) => {
 app.get("/ideas/:id", async (req, res) => {
     try {
         const id = req.params.id;
+
+        if (!ObjectId.isValid(id)) {
+            return res.status(400).send({
+                success: false,
+                message: "Invalid idea id",
+            });
+        }
 
         const result = await ideasCollection.findOne({
             _id: new ObjectId(id),
@@ -200,6 +252,13 @@ app.patch("/comments/:id", async (req, res) => {
         const id = req.params.id;
         const { commentText, userEmail } = req.body;
 
+        if (!ObjectId.isValid(id)) {
+            return res.status(400).send({
+                success: false,
+                message: "Invalid comment id",
+            });
+        }
+
         const result = await commentsCollection.updateOne(
             {
                 _id: new ObjectId(id),
@@ -235,12 +294,19 @@ app.delete("/comments/:id", async (req, res) => {
         const id = req.params.id;
         const { userEmail, ideaId } = req.body;
 
+        if (!ObjectId.isValid(id)) {
+            return res.status(400).send({
+                success: false,
+                message: "Invalid comment id",
+            });
+        }
+
         const result = await commentsCollection.deleteOne({
             _id: new ObjectId(id),
             userEmail,
         });
 
-        if (result.deletedCount > 0) {
+        if (result.deletedCount > 0 && ObjectId.isValid(ideaId)) {
             await ideasCollection.updateOne(
                 { _id: new ObjectId(ideaId) },
                 { $inc: { commentsCount: -1 } }
@@ -296,6 +362,13 @@ app.patch("/ideas/:id", async (req, res) => {
         const id = req.params.id;
         const updatedIdea = req.body;
 
+        if (!ObjectId.isValid(id)) {
+            return res.status(400).send({
+                success: false,
+                message: "Invalid idea id",
+            });
+        }
+
         const query = {
             _id: new ObjectId(id),
             creatorEmail: updatedIdea.creatorEmail,
@@ -341,6 +414,13 @@ app.delete("/ideas/:id", async (req, res) => {
         const id = req.params.id;
         const { creatorEmail } = req.body;
 
+        if (!ObjectId.isValid(id)) {
+            return res.status(400).send({
+                success: false,
+                message: "Invalid idea id",
+            });
+        }
+
         const result = await ideasCollection.deleteOne({
             _id: new ObjectId(id),
             creatorEmail,
@@ -348,6 +428,7 @@ app.delete("/ideas/:id", async (req, res) => {
 
         if (result.deletedCount > 0) {
             await commentsCollection.deleteMany({ ideaId: id });
+            await bookmarksCollection.deleteMany({ ideaId: id });
         }
 
         res.send({
@@ -426,6 +507,182 @@ app.get("/my-interactions", async (req, res) => {
     }
 });
 
+/* Check Bookmark Status For One Idea */
+app.get("/ideas/:id/bookmark-status", async (req, res) => {
+    try {
+        const ideaId = req.params.id;
+        const email = req.query.email;
+
+        if (!email) {
+            return res.status(400).send({
+                success: false,
+                message: "User email is required",
+            });
+        }
+
+        const bookmark = await bookmarksCollection.findOne({
+            ideaId,
+            userEmail: email,
+        });
+
+        const idea = await ideasCollection.findOne({
+            _id: new ObjectId(ideaId),
+        });
+
+        res.send({
+            success: true,
+            bookmarked: Boolean(bookmark),
+            bookmarksCount: idea?.bookmarksCount || 0,
+        });
+    } catch (error) {
+        res.status(500).send({
+            success: false,
+            message: "Failed to check bookmark status",
+            error: error.message,
+        });
+    }
+});
+
+/* Toggle Bookmark */
+app.post("/ideas/:id/bookmark", async (req, res) => {
+    try {
+        const ideaId = req.params.id;
+        const { userEmail, userName, userImage } = req.body;
+
+        if (!userEmail) {
+            return res.status(400).send({
+                success: false,
+                message: "User email is required",
+            });
+        }
+
+        if (!ObjectId.isValid(ideaId)) {
+            return res.status(400).send({
+                success: false,
+                message: "Invalid idea id",
+            });
+        }
+
+        const existingBookmark = await bookmarksCollection.findOne({
+            ideaId,
+            userEmail,
+        });
+
+        if (existingBookmark) {
+            await bookmarksCollection.deleteOne({
+                _id: existingBookmark._id,
+            });
+
+            await ideasCollection.updateOne(
+                {
+                    _id: new ObjectId(ideaId),
+                    bookmarksCount: { $gt: 0 },
+                },
+                {
+                    $inc: { bookmarksCount: -1 },
+                }
+            );
+
+            const updatedIdea = await ideasCollection.findOne({
+                _id: new ObjectId(ideaId),
+            });
+
+            return res.send({
+                success: true,
+                bookmarked: false,
+                message: "Bookmark removed",
+                bookmarksCount: updatedIdea?.bookmarksCount || 0,
+            });
+        }
+
+        const newBookmark = {
+            ideaId,
+            userEmail,
+            userName: userName || "IdeaVault User",
+            userImage: userImage || "",
+            createdAt: new Date().toISOString(),
+        };
+
+        await bookmarksCollection.insertOne(newBookmark);
+
+        await ideasCollection.updateOne(
+            { _id: new ObjectId(ideaId) },
+            { $inc: { bookmarksCount: 1 } }
+        );
+
+        const updatedIdea = await ideasCollection.findOne({
+            _id: new ObjectId(ideaId),
+        });
+
+        res.send({
+            success: true,
+            bookmarked: true,
+            message: "Idea bookmarked",
+            bookmarksCount: updatedIdea?.bookmarksCount || 0,
+        });
+    } catch (error) {
+        res.status(500).send({
+            success: false,
+            message: "Failed to toggle bookmark",
+            error: error.message,
+        });
+    }
+});
+
+/* My Bookmarked Ideas */
+app.get("/my-bookmarks", async (req, res) => {
+    try {
+        const email = req.query.email;
+
+        if (!email) {
+            return res.status(400).send({
+                success: false,
+                message: "User email is required",
+            });
+        }
+
+        const bookmarks = await bookmarksCollection
+            .find({ userEmail: email })
+            .sort({ createdAt: -1 })
+            .toArray();
+
+        if (bookmarks.length === 0) {
+            return res.send([]);
+        }
+
+        const ideaIds = bookmarks
+            .map((bookmark) => bookmark.ideaId)
+            .filter((id) => ObjectId.isValid(id))
+            .map((id) => new ObjectId(id));
+
+        const ideas = await ideasCollection
+            .find({ _id: { $in: ideaIds } })
+            .toArray();
+
+        const result = bookmarks
+            .map((bookmark) => {
+                const idea = ideas.find(
+                    (item) => item._id.toString() === bookmark.ideaId
+                );
+
+                if (!idea) return null;
+
+                return {
+                    ...idea,
+                    bookmarkedAt: bookmark.createdAt,
+                };
+            })
+            .filter(Boolean);
+
+        res.send(result);
+    } catch (error) {
+        res.status(500).send({
+            success: false,
+            message: "Failed to load bookmarks",
+            error: error.message,
+        });
+    }
+});
 
 
 async function run() {
@@ -436,6 +693,7 @@ async function run() {
 
         ideasCollection = database.collection("ideas");
         commentsCollection = database.collection("comments");
+        bookmarksCollection = database.collection("bookmarks");
 
         await client.db("admin").command({ ping: 1 });
 
