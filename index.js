@@ -1,6 +1,7 @@
 const express = require("express");
 const dotenv = require("dotenv");
 const cors = require("cors");
+const jwt = require("jsonwebtoken");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
 dotenv.config();
@@ -25,13 +26,45 @@ let ideasCollection;
 let commentsCollection;
 let bookmarksCollection;
 
+const verifyJwt = (req, res, next) => {
+    const authorization = req.headers.authorization;
+
+    if (!authorization) {
+        return res.status(401).send({
+            success: false,
+            message: "Unauthorized access. No token provided.",
+        });
+    }
+
+    const token = authorization.split(" ")[1];
+
+    if (!token) {
+        return res.status(401).send({
+            success: false,
+            message: "Unauthorized access. Invalid token format.",
+        });
+    }
+
+    jwt.verify(token, process.env.JWT_SECRET, (error, decoded) => {
+        if (error) {
+            return res.status(403).send({
+                success: false,
+                message: "Forbidden access. Invalid token.",
+            });
+        }
+
+        req.user = decoded;
+        next();
+    });
+};
+
 /* Root Route */
 app.get("/", (req, res) => {
     res.send("Server is running fine!");
 });
 
 /* Add Idea */
-app.post("/ideas", async (req, res) => {
+app.post("/ideas", verifyJwt, async (req, res) => {
     try {
         const idea = req.body;
 
@@ -47,9 +80,9 @@ app.post("/ideas", async (req, res) => {
             problemStatement: idea.problemStatement,
             proposedSolution: idea.proposedSolution,
 
-            creatorName: idea.creatorName || "IdeaVault User",
-            creatorEmail: idea.creatorEmail || "",
-            creatorImage: idea.creatorImage || "",
+            creatorName: req.user.name || "IdeaVault User",
+            creatorEmail: req.user.email,
+            creatorImage: req.user.image || "",
 
             likesCount: 0,
             commentsCount: 0,
@@ -210,16 +243,16 @@ app.get("/ideas/:id/comments", async (req, res) => {
 });
 
 /* Add Comment */
-app.post("/ideas/:id/comments", async (req, res) => {
+app.post("/ideas/:id/comments", verifyJwt, async (req, res) => {
     try {
         const ideaId = req.params.id;
         const comment = req.body;
 
         const newComment = {
             ideaId,
-            userName: comment.userName || "IdeaVault User",
-            userEmail: comment.userEmail || "",
-            userImage: comment.userImage || "",
+            userName: req.user.name || "IdeaVault User",
+            userEmail: req.user.email,
+            userImage: req.user.image || "",
             commentText: comment.commentText,
             createdAt: new Date().toISOString(),
             updatedAt: null,
@@ -247,10 +280,11 @@ app.post("/ideas/:id/comments", async (req, res) => {
 });
 
 /* Update Own Comment */
-app.patch("/comments/:id", async (req, res) => {
+app.patch("/comments/:id", verifyJwt, async (req, res) => {
     try {
         const id = req.params.id;
-        const { commentText, userEmail } = req.body;
+        const { commentText } = req.body;
+        const userEmail = req.user.email;
 
         if (!ObjectId.isValid(id)) {
             return res.status(400).send({
@@ -289,10 +323,11 @@ app.patch("/comments/:id", async (req, res) => {
 });
 
 /* Delete Own Comment */
-app.delete("/comments/:id", async (req, res) => {
+app.delete("/comments/:id", verifyJwt, async (req, res) => {
     try {
         const id = req.params.id;
-        const { userEmail, ideaId } = req.body;
+        const { ideaId } = req.body;
+        const userEmail = req.user.email;
 
         if (!ObjectId.isValid(id)) {
             return res.status(400).send({
@@ -330,9 +365,9 @@ app.delete("/comments/:id", async (req, res) => {
 });
 
 /* Get Ideas Created By Logged In User */
-app.get("/my-ideas", async (req, res) => {
+app.get("/my-ideas", verifyJwt, async (req, res) => {
     try {
-        const email = req.query.email;
+        const email = req.user.email;
 
         if (!email) {
             return res.status(400).send({
@@ -357,7 +392,7 @@ app.get("/my-ideas", async (req, res) => {
 });
 
 /* Update Own Idea */
-app.patch("/ideas/:id", async (req, res) => {
+app.patch("/ideas/:id", verifyJwt, async (req, res) => {
     try {
         const id = req.params.id;
         const updatedIdea = req.body;
@@ -371,7 +406,7 @@ app.patch("/ideas/:id", async (req, res) => {
 
         const query = {
             _id: new ObjectId(id),
-            creatorEmail: updatedIdea.creatorEmail,
+            creatorEmail: req.user.email,
         };
 
         const updateDoc = {
@@ -409,10 +444,9 @@ app.patch("/ideas/:id", async (req, res) => {
 });
 
 /* Delete Own Idea */
-app.delete("/ideas/:id", async (req, res) => {
+app.delete("/ideas/:id", verifyJwt, async (req, res) => {
     try {
         const id = req.params.id;
-        const { creatorEmail } = req.body;
 
         if (!ObjectId.isValid(id)) {
             return res.status(400).send({
@@ -423,7 +457,7 @@ app.delete("/ideas/:id", async (req, res) => {
 
         const result = await ideasCollection.deleteOne({
             _id: new ObjectId(id),
-            creatorEmail,
+            creatorEmail: req.user.email,
         });
 
         if (result.deletedCount > 0) {
@@ -448,9 +482,9 @@ app.delete("/ideas/:id", async (req, res) => {
 });
 
 /* My Interactions - Ideas Where User Commented */
-app.get("/my-interactions", async (req, res) => {
+app.get("/my-interactions", verifyJwt, async (req, res) => {
     try {
-        const email = req.query.email;
+        const email = req.user.email;
 
         if (!email) {
             return res.status(400).send({
@@ -508,10 +542,10 @@ app.get("/my-interactions", async (req, res) => {
 });
 
 /* Check Bookmark Status For One Idea */
-app.get("/ideas/:id/bookmark-status", async (req, res) => {
+app.get("/ideas/:id/bookmark-status", verifyJwt, async (req, res) => {
     try {
         const ideaId = req.params.id;
-        const email = req.query.email;
+        const email = req.user.email;
 
         if (!email) {
             return res.status(400).send({
@@ -544,10 +578,12 @@ app.get("/ideas/:id/bookmark-status", async (req, res) => {
 });
 
 /* Toggle Bookmark */
-app.post("/ideas/:id/bookmark", async (req, res) => {
+app.post("/ideas/:id/bookmark", verifyJwt, async (req, res) => {
     try {
         const ideaId = req.params.id;
-        const { userEmail, userName, userImage } = req.body;
+        const userEmail = req.user.email;
+        const userName = req.user.name;
+        const userImage = req.user.image || "";
 
         if (!userEmail) {
             return res.status(400).send({
@@ -630,9 +666,9 @@ app.post("/ideas/:id/bookmark", async (req, res) => {
 });
 
 /* My Bookmarked Ideas */
-app.get("/my-bookmarks", async (req, res) => {
+app.get("/my-bookmarks", verifyJwt, async (req, res) => {
     try {
-        const email = req.query.email;
+        const email = req.user.email;
 
         if (!email) {
             return res.status(400).send({
@@ -687,7 +723,7 @@ app.get("/my-bookmarks", async (req, res) => {
 
 async function run() {
     try {
-        await client.connect();
+        // await client.connect();
 
         const database = client.db("startup-server");
 
@@ -695,7 +731,7 @@ async function run() {
         commentsCollection = database.collection("comments");
         bookmarksCollection = database.collection("bookmarks");
 
-        await client.db("admin").command({ ping: 1 });
+        // await client.db("admin").command({ ping: 1 });
 
         console.log("Connected to MongoDB!");
     } catch (err) {
