@@ -263,6 +263,170 @@ app.delete("/comments/:id", async (req, res) => {
     }
 });
 
+/* Get Ideas Created By Logged In User */
+app.get("/my-ideas", async (req, res) => {
+    try {
+        const email = req.query.email;
+
+        if (!email) {
+            return res.status(400).send({
+                success: false,
+                message: "User email is required",
+            });
+        }
+
+        const result = await ideasCollection
+            .find({ creatorEmail: email })
+            .sort({ createdAt: -1 })
+            .toArray();
+
+        res.send(result);
+    } catch (error) {
+        res.status(500).send({
+            success: false,
+            message: "Failed to load my ideas",
+            error: error.message,
+        });
+    }
+});
+
+/* Update Own Idea */
+app.patch("/ideas/:id", async (req, res) => {
+    try {
+        const id = req.params.id;
+        const updatedIdea = req.body;
+
+        const query = {
+            _id: new ObjectId(id),
+            creatorEmail: updatedIdea.creatorEmail,
+        };
+
+        const updateDoc = {
+            $set: {
+                ideaTitle: updatedIdea.ideaTitle,
+                shortDescription: updatedIdea.shortDescription,
+                detailedDescription: updatedIdea.detailedDescription,
+                category: updatedIdea.category,
+                tags: updatedIdea.tags || [],
+                imageURL: updatedIdea.imageURL,
+                estimatedBudget: updatedIdea.estimatedBudget || null,
+                targetAudience: updatedIdea.targetAudience,
+                problemStatement: updatedIdea.problemStatement,
+                proposedSolution: updatedIdea.proposedSolution,
+                updatedAt: new Date().toISOString(),
+            },
+        };
+
+        const result = await ideasCollection.updateOne(query, updateDoc);
+
+        res.send({
+            success: result.modifiedCount > 0,
+            message:
+                result.modifiedCount > 0
+                    ? "Idea updated successfully"
+                    : "You can only update your own idea",
+        });
+    } catch (error) {
+        res.status(500).send({
+            success: false,
+            message: "Failed to update idea",
+            error: error.message,
+        });
+    }
+});
+
+/* Delete Own Idea */
+app.delete("/ideas/:id", async (req, res) => {
+    try {
+        const id = req.params.id;
+        const { creatorEmail } = req.body;
+
+        const result = await ideasCollection.deleteOne({
+            _id: new ObjectId(id),
+            creatorEmail,
+        });
+
+        if (result.deletedCount > 0) {
+            await commentsCollection.deleteMany({ ideaId: id });
+        }
+
+        res.send({
+            success: result.deletedCount > 0,
+            message:
+                result.deletedCount > 0
+                    ? "Idea deleted successfully"
+                    : "You can only delete your own idea",
+        });
+    } catch (error) {
+        res.status(500).send({
+            success: false,
+            message: "Failed to delete idea",
+            error: error.message,
+        });
+    }
+});
+
+/* My Interactions - Ideas Where User Commented */
+app.get("/my-interactions", async (req, res) => {
+    try {
+        const email = req.query.email;
+
+        if (!email) {
+            return res.status(400).send({
+                success: false,
+                message: "User email is required",
+            });
+        }
+
+        const comments = await commentsCollection
+            .find({ userEmail: email })
+            .sort({ createdAt: -1 })
+            .toArray();
+
+        if (comments.length === 0) {
+            return res.send([]);
+        }
+
+        const uniqueIdeaIds = [
+            ...new Set(comments.map((comment) => comment.ideaId).filter(Boolean)),
+        ];
+
+        const objectIds = uniqueIdeaIds
+            .filter((id) => ObjectId.isValid(id))
+            .map((id) => new ObjectId(id));
+
+        if (objectIds.length === 0) {
+            return res.send([]);
+        }
+
+        const ideas = await ideasCollection
+            .find({ _id: { $in: objectIds } })
+            .toArray();
+
+        const result = ideas.map((idea) => {
+            const relatedComments = comments.filter(
+                (comment) => comment.ideaId === idea._id.toString()
+            );
+
+            return {
+                ...idea,
+                myComments: relatedComments,
+            };
+        });
+
+        res.send(result);
+    } catch (error) {
+        console.error("My interactions error:", error);
+
+        res.status(500).send({
+            success: false,
+            message: "Failed to load my interactions",
+            error: error.message,
+        });
+    }
+});
+
+
 
 async function run() {
     try {
